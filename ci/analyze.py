@@ -12,6 +12,8 @@ from rules.engine import run_rules
 from rules.scorer import compute_score
 from llm.adapter import complete
 from llm.config import load_config
+from cli.reporter import print_report
+
 
 SYSTEM_PROMPT = """You are a commit quality reviewer. Your job is to assess whether
 the commit message accurately describes the code changes in the diff.
@@ -146,9 +148,5 @@ def _has_remote() -> bool:
 
 if __name__ == "__main__":
     report = run()
+    print_report(report)
     post_to_dashboard(report)
-    print(f"\n[ci] Done — Grade {report['grade']} (score={report['score']})")
-    if report["flags"]:
-        print("[ci] Flags:")
-        for f in report["flags"]:
-            print(f"  [{f['severity'].upper()}] {f['rule']}: {f['detail']}")
