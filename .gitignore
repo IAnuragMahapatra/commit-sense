@@ -1,0 +1,6 @@
+.agy/
+.reference/
+commitsense.yml
+.env
+__pycache__/
+*.pyc
