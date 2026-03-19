@@ -1,0 +1,18 @@
+llm:
+  base_url: https://api.openai.com
+  model: gpt-4o-mini
+  api_key: ${COMMITSENSE_API_KEY}
+  provider_type: openai        # "openai" or "anthropic"
+
+rules:
+  max_diff_lines: 500
+  min_message_length: 20
+  block_generics: true
+  require_conventional_commits: true
+
+rewrite:                       # only relevant if pre-push hook is installed
+  auto_amend: false
+
+dashboard:
+  url: http://localhost:8000
+  token: ${DASHBOARD_TOKEN}
