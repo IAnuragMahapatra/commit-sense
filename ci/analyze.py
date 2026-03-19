@@ -1,0 +1,154 @@
+"""CI analysis runner — full pipeline: diff → AST → rules → LLM → POST to dashboard."""
+
+import os
+import sys
+import json
+import subprocess
+import requests
+
+from diff.parser import get_diff
+from diff.ast_extractor import extract_definitions
+from rules.engine import run_rules
+from rules.scorer import compute_score
+from llm.adapter import complete
+from llm.config import load_config
+
+SYSTEM_PROMPT = """You are a commit quality reviewer. Your job is to assess whether
+the commit message accurately describes the code changes in the diff.
+
+Respond with a JSON object:
+{
+  "aligned": true or false,
+  "reason": "one sentence explanation"
+}
+
+Be strict but fair. A message is aligned if it meaningfully describes what changed."""
+
+
+def get_commit_info() -> tuple[str, str]:
+    """Return (sha, commit_message) for HEAD."""
+    sha = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], text=True
+    ).strip()
+    message = subprocess.check_output(
+        ["git", "log", "-1", "--pretty=%B"], text=True
+    ).strip()
+    return sha, message
+
+
+def build_diff_summary(file_diffs) -> str:
+    """Produce a concise diff summary for the LLM context."""
+    lines = []
+    for fd in file_diffs:
+        lines.append(f"File: {fd.path} (+{fd.additions}/-{fd.deletions})")
+        for hunk in fd.hunks[:2]:  # first 2 hunks only to keep prompt short
+            for line in hunk.lines[:10]:
+                lines.append(f"  {line}")
+    return "\n".join(lines[:80])  # hard cap at 80 lines
+
+
+def validate_with_llm(message: str, diff_summary: str) -> dict:
+    """Ask the LLM whether the message aligns with the diff."""
+    user_content = f"Commit message:\n{message}\n\nDiff summary:\n{diff_summary}"
+    try:
+        raw = complete(
+            [{"role": "user", "content": user_content}],
+            system_prompt=SYSTEM_PROMPT,
+        )
+        # Strip markdown fences if present
+        raw = raw.strip().strip("```json").strip("```").strip()
+        return json.loads(raw)
+    except Exception as exc:
+        return {"aligned": None, "reason": f"LLM call failed: {exc}"}
+
+
+def post_to_dashboard(payload: dict) -> None:
+    """POST the full report to the dashboard."""
+    cfg = load_config()
+    dashboard = cfg.get("dashboard", {})
+    url = dashboard.get("url", "").rstrip("/")
+    token = dashboard.get("token", "")
+
+    if not url:
+        print("[ci] No dashboard URL configured — skipping POST")
+        return
+
+    try:
+        resp = requests.post(
+            f"{url}/api/reports",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        print(f"[ci] Report posted — status {resp.status_code}")
+    except Exception as exc:
+        print(f"[ci] Dashboard POST failed: {exc}", file=sys.stderr)
+
+
+def run(repo_path: str = ".") -> dict:
+    """Run the full CI analysis pipeline. Returns the report dict."""
+    sha, message = get_commit_info()
+    print(f"[ci] Analyzing commit {sha[:8]}: {message[:60]}")
+
+    # 1. Git diff
+    file_diffs = get_diff(repo_path)
+    print(f"[ci] {len(file_diffs)} file(s) changed")
+
+    # 2. AST extraction (changed files only, supported extensions)
+    supported = {".py", ".js", ".mjs", ".cjs", ".ts", ".tsx"}
+    ast_results = {}
+    for fd in file_diffs:
+        if any(fd.path.endswith(ext) for ext in supported):
+            ast_results[fd.path] = extract_definitions(fd.path, repo_path)
+
+    # 3. Rule engine
+    flags = run_rules(message, file_diffs, ast_results)
+    score_data = compute_score(flags)
+    print(f"[ci] Grade: {score_data['grade']}  Score: {score_data['score']}")
+
+    # 4. LLM validation
+    diff_summary = build_diff_summary(file_diffs)
+    llm_result = validate_with_llm(message, diff_summary)
+    print(f"[ci] LLM aligned: {llm_result.get('aligned')} — {llm_result.get('reason', '')}")
+
+    # 5. Build report
+    repo = subprocess.check_output(
+        ["git", "remote", "get-url", "origin"], text=True
+    ).strip() if _has_remote() else os.path.basename(os.path.abspath(repo_path))
+
+    report = {
+        "sha": sha,
+        "repo": repo,
+        "original_message": message,
+        "rewritten_message": None,
+        "amended": False,
+        "score": score_data["score"],
+        "grade": score_data["grade"],
+        "llm_aligned": llm_result.get("aligned"),
+        "llm_reason": llm_result.get("reason"),
+        "flags": [
+            {"rule": f.rule, "severity": f.severity, "detail": f.detail}
+            for f in flags
+        ],
+    }
+
+    return report
+
+
+def _has_remote() -> bool:
+    try:
+        subprocess.check_output(["git", "remote", "get-url", "origin"], stderr=subprocess.DEVNULL)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
+if __name__ == "__main__":
+    report = run()
+    post_to_dashboard(report)
+    print(f"\n[ci] Done — Grade {report['grade']} (score={report['score']})")
+    if report["flags"]:
+        print("[ci] Flags:")
+        for f in report["flags"]:
+            print(f"  [{f['severity'].upper()}] {f['rule']}: {f['detail']}")
