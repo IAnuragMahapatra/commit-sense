@@ -20,6 +20,15 @@ CONVENTIONAL_RE = re.compile(
 
 BREAKING_KEYWORDS = ("breaking", "removed", "deleted", "dropped")
 
+# Patterns to detect function definition changes in diff lines
+_PY_DEF_RE = re.compile(r"^[+-]\s*def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(")
+_JS_DEF_RE = re.compile(
+    r"^[+-]\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[\(\{]"
+)
+_JS_ARROW_RE = re.compile(
+    r"^[+-]\s*(?:export\s+)?(?:const|let|var)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?:async\s*)?\("
+)
+
 
 @dataclass
 class Flag:
@@ -98,21 +107,29 @@ def run_rules(
         ))
 
     # 6. Public function signature changed, not mentioned in message
-    public_fns: list[str] = []
-    for path, defs in ast_results.items():
-        ext = Path(path).suffix.lower()
-        # Python: public = no leading underscore
+    # Only fires if a function *definition line* was actually modified in the diff.
+    changed_fns: list[str] = []
+    for fd in file_diffs:
+        ext = Path(fd.path).suffix.lower()
+        all_hunk_lines = [line for hunk in fd.hunks for line in hunk.lines]
         if ext == ".py":
-            public_fns.extend(fn for fn in defs.get("functions", []) if not fn.startswith("_"))
-        else:
-            # JS/TS: exported names are the public surface
-            public_fns.extend(defs.get("exports", []))
+            for line in all_hunk_lines:
+                m = _PY_DEF_RE.match(line)
+                if m:
+                    name = m.group(1)
+                    if not name.startswith("_"):   # public only
+                        changed_fns.append(name)
+        elif ext in (".js", ".mjs", ".cjs", ".ts", ".tsx"):
+            for line in all_hunk_lines:
+                m = _JS_DEF_RE.match(line) or _JS_ARROW_RE.match(line)
+                if m:
+                    changed_fns.append(m.group(1))
 
-    unmentioned = [fn for fn in public_fns if fn and fn.lower() not in msg_lower]
-    if public_fns and unmentioned:
+    unmentioned = [fn for fn in changed_fns if fn and fn.lower() not in msg_lower]
+    if changed_fns and unmentioned:
         flags.append(Flag(
             "signature_not_in_message", "critical",
-            f"Public functions changed but not in message: {', '.join(unmentioned[:5])}",
+            f"Function definitions changed but not in message: {', '.join(unmentioned[:5])}",
         ))
 
     # 7. Multiple unrelated modules in one commit
