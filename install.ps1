@@ -43,6 +43,9 @@ cd '$UnixRoot'
 python -m hooks.pre_push
 "@
 
+# Git for Windows/MSYS requires Unix line endings (LF), not CRLF
+$HookContent = $HookContent -replace "`r`n", "`n"
+
 Set-Content -Path $HookFile -Value $HookContent -Encoding UTF8 -NoNewline
 
 Write-Host ""
