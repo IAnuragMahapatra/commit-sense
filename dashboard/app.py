@@ -70,10 +70,11 @@ class ReportPayload(BaseModel):
 @app.post("/api/reports", dependencies=[Depends(verify_token)])
 def post_report(payload: ReportPayload, db: Session = Depends(get_db)):
     """Upsert a report from CI or pre-push hook."""
+    repo_name = _normalize_repo(payload.repo)
     # Get or create repo
-    repo = db.query(Repo).filter(Repo.name == payload.repo).first()
+    repo = db.query(Repo).filter(Repo.name == repo_name).first()
     if not repo:
-        repo = Repo(name=payload.repo)
+        repo = Repo(name=repo_name)
         db.add(repo)
         db.flush()
 
@@ -110,16 +111,15 @@ def get_repos(db: Session = Depends(get_db)):
     return [{"id": r.id, "name": r.name, "created_at": r.created_at} for r in repos]
 
 
-@app.get("/api/repos/{repo}/commits")
-def get_commits(repo: str, limit: int = 50, db: Session = Depends(get_db)):
+@app.get("/api/repos/{repo_id}/commits")
+def get_commits(repo_id: int, limit: int = 50, db: Session = Depends(get_db)):
     """List commits for a repo, most recent first."""
-    repo_obj = db.query(Repo).filter(Repo.name == repo).first()
-    if not repo_obj:
+    if not db.query(Repo).filter(Repo.id == repo_id).first():
         raise HTTPException(status_code=404, detail="Repo not found")
 
     commits = (
         db.query(Commit)
-        .filter(Commit.repo_id == repo_obj.id)
+        .filter(Commit.repo_id == repo_id)
         .order_by(Commit.created_at.desc())
         .limit(limit)
         .all()
@@ -127,22 +127,21 @@ def get_commits(repo: str, limit: int = 50, db: Session = Depends(get_db)):
     return [_commit_dict(c) for c in commits]
 
 
-@app.get("/api/repos/{repo}/trends")
-def get_trends(repo: str, db: Session = Depends(get_db)):
+@app.get("/api/repos/{repo_id}/trends")
+def get_trends(repo_id: int, db: Session = Depends(get_db)):
     """Grade distribution and average score over time."""
-    repo_obj = db.query(Repo).filter(Repo.name == repo).first()
-    if not repo_obj:
+    if not db.query(Repo).filter(Repo.id == repo_id).first():
         raise HTTPException(status_code=404, detail="Repo not found")
 
     rows = (
         db.query(Commit.grade, func.count(Commit.id).label("count"))
-        .filter(Commit.repo_id == repo_obj.id, Commit.grade.isnot(None))
+        .filter(Commit.repo_id == repo_id, Commit.grade.isnot(None))
         .group_by(Commit.grade)
         .all()
     )
     avg = (
         db.query(func.avg(Commit.score))
-        .filter(Commit.repo_id == repo_obj.id, Commit.score.isnot(None))
+        .filter(Commit.repo_id == repo_id, Commit.score.isnot(None))
         .scalar()
     )
     return {
@@ -151,17 +150,16 @@ def get_trends(repo: str, db: Session = Depends(get_db)):
     }
 
 
-@app.get("/api/repos/{repo}/patterns")
-def get_patterns(repo: str, db: Session = Depends(get_db)):
+@app.get("/api/repos/{repo_id}/patterns")
+def get_patterns(repo_id: int, db: Session = Depends(get_db)):
     """Most frequently triggered rules across all commits."""
-    repo_obj = db.query(Repo).filter(Repo.name == repo).first()
-    if not repo_obj:
+    if not db.query(Repo).filter(Repo.id == repo_id).first():
         raise HTTPException(status_code=404, detail="Repo not found")
 
     rows = (
         db.query(Flag.rule, Flag.severity, func.count(Flag.id).label("count"))
         .join(Commit)
-        .filter(Commit.repo_id == repo_obj.id)
+        .filter(Commit.repo_id == repo_id)
         .group_by(Flag.rule, Flag.severity)
         .order_by(func.count(Flag.id).desc())
         .limit(10)
@@ -188,3 +186,25 @@ def _commit_dict(c: Commit) -> dict:
             for f in c.flags
         ],
     }
+
+
+def _normalize_repo(repo: str) -> str:
+    """Normalize a repo identifier to owner/repo format.
+
+    Handles full GitHub URLs like:
+      https://github.com/owner/repo.git  →  owner/repo
+      git@github.com:owner/repo.git      →  owner/repo
+    Plain owner/repo strings are returned unchanged.
+    """
+    import re
+    repo = repo.strip()
+    # HTTPS URL
+    m = re.match(r"https?://[^/]+/([^/]+/[^/]+?)(?:\.git)?$", repo)
+    if m:
+        return m.group(1)
+    # SSH URL
+    m = re.match(r"git@[^:]+:([^/]+/[^/]+?)(?:\.git)?$", repo)
+    if m:
+        return m.group(1)
+    # Already owner/repo or local name — strip .git suffix if present
+    return repo.removesuffix(".git")

@@ -21,19 +21,20 @@ const SEVERITY_VARIANTS: Record<string, "default" | "secondary" | "destructive" 
 
 export function PatternsPage() {
   const { repo } = useParams<{ repo: string }>()
+  const repoId = Number(repo)
   const [patterns, setPatterns] = useState<Pattern[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!repo) return
-    api.patterns(decodeURIComponent(repo))
+    if (!repoId) return
+    api.patterns(repoId)
       .then(setPatterns)
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false))
-  }, [repo])
+  }, [repoId])
 
-  const repoName = decodeURIComponent(repo ?? "")
+  const repoName = repo ?? ""
 
   if (loading) return (
     <div className="flex flex-col gap-3 p-6">

@@ -44,7 +44,7 @@ export interface Pattern {
 
 export const api = {
   repos: () => get<Repo[]>("/api/repos"),
-  commits: (repo: string) => get<Commit[]>(`/api/repos/${repo}/commits`),
-  trends: (repo: string) => get<Trends>(`/api/repos/${repo}/trends`),
-  patterns: (repo: string) => get<Pattern[]>(`/api/repos/${repo}/patterns`),
+  commits: (repoId: number) => get<Commit[]>(`/api/repos/${repoId}/commits`),
+  trends: (repoId: number) => get<Trends>(`/api/repos/${repoId}/trends`),
+  patterns: (repoId: number) => get<Pattern[]>(`/api/repos/${repoId}/patterns`),
 }

@@ -24,18 +24,19 @@ const SEVERITY_VARIANTS: Record<string, "default" | "secondary" | "destructive" 
 
 export function CommitsPage() {
   const { repo } = useParams<{ repo: string }>()
+  const repoId = Number(repo)
   const [commits, setCommits] = useState<Commit[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!repo) return
-    api.commits(decodeURIComponent(repo))
+    if (!repoId) return
+    api.commits(repoId)
       .then(setCommits)
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false))
-  }, [repo])
+  }, [repoId])
 
   if (loading) return (
     <div className="flex flex-col gap-3 p-6">
@@ -51,7 +52,7 @@ export function CommitsPage() {
         <div>
           <Link to="/" className="text-sm text-muted-foreground hover:underline">Repositories</Link>
           <span className="mx-2 text-muted-foreground">/</span>
-          <span className="text-sm font-medium">{decodeURIComponent(repo ?? "")}</span>
+          <span className="text-sm font-medium">{repo}</span>
         </div>
         <div className="flex gap-2">
           <Link to={`/repos/${repo}/trends`} className="text-sm text-muted-foreground hover:underline">Trends</Link>

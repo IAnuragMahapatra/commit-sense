@@ -38,7 +38,7 @@ export function ReposPage() {
       <h1 className="text-2xl font-semibold">Repositories</h1>
       <div className="grid gap-3 sm:grid-cols-2">
         {repos.map(repo => (
-          <Link key={repo.id} to={`/repos/${encodeURIComponent(repo.name)}`}>
+          <Link key={repo.id} to={`/repos/${repo.id}`}>
             <Card className="hover:bg-muted/50 transition-colors cursor-pointer">
               <CardHeader>
                 <CardTitle className="text-base">{repo.name}</CardTitle>
