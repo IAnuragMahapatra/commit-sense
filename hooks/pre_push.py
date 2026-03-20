@@ -1,22 +1,21 @@
 """Pre-push hook — lightweight: diff → rules → rewrite → amend → POST."""
 
 import os
-import sys
 import subprocess
+import sys
+
 import requests
 
 from diff.parser import get_diff
+from llm.config import load_config
+from rewriter.rewriter import rewrite_message
 from rules.engine import run_rules
 from rules.scorer import compute_score
-from rewriter.rewriter import rewrite_message
-from llm.config import load_config
 
 
 def _get_commit_info() -> tuple[str, str]:
     """Return (sha, commit_message) for HEAD."""
-    sha = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], text=True
-    ).strip()
+    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     message = subprocess.check_output(
         ["git", "log", "-1", "--pretty=%B"], text=True
     ).strip()
@@ -28,7 +27,8 @@ def _get_repo_name() -> str:
     try:
         return subprocess.check_output(
             ["git", "remote", "get-url", "origin"],
-            text=True, stderr=subprocess.DEVNULL,
+            text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
     except subprocess.CalledProcessError:
         return os.path.basename(os.getcwd())
@@ -109,7 +109,7 @@ def main() -> None:
         print(f"  ⚠ Rewrite failed: {exc} — keeping original message")
         return
 
-    print(f"\n  📝 Suggested rewrite:")
+    print("\n  📝 Suggested rewrite:")
     print(f"     Original:  {message}")
     print(f"     Rewritten: {result.rewritten}")
     print(f"     Reason:    {result.explanation}")
@@ -149,13 +149,15 @@ def main() -> None:
         return
 
     # 7. POST lightweight record to dashboard
-    _post_to_dashboard({
-        "sha": new_sha,
-        "repo": _get_repo_name(),
-        "original_message": message,
-        "rewritten_message": result.rewritten,
-        "amended": True,
-    })
+    _post_to_dashboard(
+        {
+            "sha": new_sha,
+            "repo": _get_repo_name(),
+            "original_message": message,
+            "rewritten_message": result.rewritten,
+            "amended": True,
+        }
+    )
 
     print("  ✓ Done\n")
 
