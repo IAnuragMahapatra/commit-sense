@@ -123,11 +123,14 @@ def main() -> None:
         print("\n  ⚡ auto_amend is on — amending automatically")
     else:
         try:
-            answer = input("\n  Accept rewrite? [Y/n] ").strip().lower()
+            print("\n  Accept rewrite? [Y/n] ", end="", flush=True)
+            tty_dev = "CON" if os.name == "nt" else "/dev/tty"
+            with open(tty_dev, "r") as tty:
+                answer = tty.readline().strip().lower()
             accept = answer in ("", "y", "yes")
-        except (EOFError, KeyboardInterrupt):
+        except (OSError, EOFError, KeyboardInterrupt):
             accept = False
-
+            
     if not accept:
         print("  → Keeping original message")
         return
