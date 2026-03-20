@@ -46,7 +46,10 @@ python -m hooks.pre_push
 # Git for Windows/MSYS requires Unix line endings (LF), not CRLF
 $HookContent = $HookContent -replace "`r`n", "`n"
 
-Set-Content -Path $HookFile -Value $HookContent -Encoding UTF8 -NoNewline
+# PowerShell 5.1 Set-Content -Encoding UTF8 adds a BOM, which breaks bash text parsing.
+# We must write UTF-8 without BOM:
+$Utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($HookFile, $HookContent, $Utf8NoBom)
 
 Write-Host ""
 Write-Host "[OK] CommitSense pre-push hook installed"
