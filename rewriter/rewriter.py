@@ -11,7 +11,8 @@ You are a Git commit message editor. Your only job is to rewrite a bad commit \
 message into a good one.
 
 Rules:
-- Address the specific rule violations provided by the static analysis
+- Address the specific rule violations provided by static analysis
+- signature_not_in_message: Only address if the change could cause serious API breakage
 - If a rule complaints about a missing scope/module, use the diff to determine the top-level module and include it in the scope
 - Follow conventional commits exactly: type(scope): subject
 - Valid types: feat, fix, docs, style, refactor, perf, test, chore, ci, build, revert
@@ -20,7 +21,7 @@ Rules:
 - If the diff mentions a breaking change, add ! after type(scope)
 - Do not invent details not supported by the diff
 
-Respond with a JSON object only — no markdown, no extra text:
+Respond quickly with a JSON object only — no reasoning, no markdown, no extra text:
 {
   "rewritten": "<conventional commit message>",
   "explanation": "<one sentence: what was wrong and what you changed>"
@@ -52,9 +53,10 @@ def rewrite_message(
     Raises:
         RuntimeError: If the LLM call fails or returns unparseable output.
     """
-    flag_lines = "\n".join(
-        f"- [{f.severity.upper()}] {f.rule}: {f.detail}" for f in flags
-    ) or "- (no rule flags)"
+    flag_lines = (
+        "\n".join(f"- [{f.severity.upper()}] {f.rule}: {f.detail}" for f in flags)
+        or "- (no rule flags)"
+    )
 
     # Cap diff summary to keep prompt short
     diff_lines = diff_summary.splitlines()[:60]

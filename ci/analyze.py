@@ -18,7 +18,11 @@ from rules.scorer import compute_score
 SYSTEM_PROMPT = """You are a commit quality reviewer. Your job is to assess whether
 the commit message accurately describes the code changes in the diff.
 
-Respond with a JSON object:
+Consider the rule violations flagged by static analysis, but use your judgment:
+- signature_not_in_message: Only flag if the change could cause serious API breakage
+- Other warnings: Consider if they genuinely impact message quality
+
+Respond with a JSON object (no reasoning, be direct):
 {
   "aligned": true or false,
   "reason": "one sentence explanation"
@@ -52,9 +56,19 @@ def build_diff_summary(file_diffs) -> str:
     return "\n".join(lines[:80])  # hard cap at 80 lines
 
 
-def validate_with_llm(message: str, diff_summary: str) -> dict:
+def validate_with_llm(message: str, diff_summary: str, flags: list) -> dict:
     """Ask the LLM whether the message aligns with the diff."""
-    user_content = f"Commit message:\n{message}\n\nDiff summary:\n{diff_summary}"
+    flag_lines = (
+        "\n".join(f"- [{f.severity.upper()}] {f.rule}: {f.detail}" for f in flags)
+        if flags
+        else "- (no rule violations)"
+    )
+
+    user_content = (
+        f"Commit message:\n{message}\n\n"
+        f"Rule violations:\n{flag_lines}\n\n"
+        f"Diff summary:\n{diff_summary}"
+    )
     try:
         raw = complete(
             [{"role": "user", "content": user_content}],
@@ -114,7 +128,7 @@ def run(repo_path: str = ".", commit_ref: str = "HEAD") -> dict:
 
     # 4. LLM validation
     diff_summary = build_diff_summary(file_diffs)
-    llm_result = validate_with_llm(message, diff_summary)
+    llm_result = validate_with_llm(message, diff_summary, flags)
     print(
         f"[ci] LLM aligned: {llm_result.get('aligned')} — {llm_result.get('reason', '')}"
     )
