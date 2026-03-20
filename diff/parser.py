@@ -33,6 +33,8 @@ def get_diff(repo_path: str = ".") -> list[FileDiff]:
         cwd=repo_path,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
     if result.returncode != 0:

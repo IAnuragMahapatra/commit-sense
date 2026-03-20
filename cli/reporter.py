@@ -1,5 +1,12 @@
 """CLI stdout reporter — prints full analysis results without needing the dashboard."""
 
+import sys
+
+if getattr(sys.stdout, "encoding", "").lower() not in ("utf-8", "utf8"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except AttributeError:
+        pass
 
 GRADE_COLORS = {"A": "✅", "B": "🟡", "C": "🟠", "D": "🔴"}
 SEVERITY_ICONS = {"info": "ℹ", "warning": "⚠", "critical": "✖"}

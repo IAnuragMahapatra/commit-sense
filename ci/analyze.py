@@ -30,10 +30,10 @@ Be strict but fair. A message is aligned if it meaningfully describes what chang
 def get_commit_info() -> tuple[str, str]:
     """Return (sha, commit_message) for HEAD."""
     sha = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], text=True
+        ["git", "rev-parse", "HEAD"], text=True, encoding="utf-8", errors="replace"
     ).strip()
     message = subprocess.check_output(
-        ["git", "log", "-1", "--pretty=%B"], text=True
+        ["git", "log", "-1", "--pretty=%B"], text=True, encoding="utf-8", errors="replace"
     ).strip()
     return sha, message
 
@@ -116,7 +116,7 @@ def run(repo_path: str = ".") -> dict:
 
     # 5. Build report
     repo = subprocess.check_output(
-        ["git", "remote", "get-url", "origin"], text=True
+        ["git", "remote", "get-url", "origin"], text=True, encoding="utf-8", errors="replace"
     ).strip() if _has_remote() else os.path.basename(os.path.abspath(repo_path))
 
     report = {
