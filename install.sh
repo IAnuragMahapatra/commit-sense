@@ -33,12 +33,8 @@ if [ -f "$HOOK_FILE" ]; then
     echo "Backed up existing pre-push hook -> ${HOOK_FILE}.bak"
 fi
 
-# Write the hook shim
-cat > "$HOOK_FILE" << EOF
-#!/usr/bin/env bash
-cd "$SCRIPT_DIR"
-$PYTHON_CMD -m hooks.pre_push
-EOF
+# Write the hook shim (guarantee LF line endings using printf)
+printf "#!/usr/bin/env bash\ncd \"%s\"\n%s -m hooks.pre_push\n" "$SCRIPT_DIR" "$PYTHON_CMD" > "$HOOK_FILE"
 
 chmod +x "$HOOK_FILE"
 
