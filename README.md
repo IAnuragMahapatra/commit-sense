@@ -4,7 +4,7 @@ A Git commit quality analyzer. Every push triggers an analysis — code changes 
 
 ## Architecture Overview
 
-- **CI Analysis**: Triggered via GitHub Actions on every push. Runs git diff, parses AST using tree-sitter (Python, JS, TS, TSX), applies deterministic rules, validates alignment with an LLM (OpenAI or Anthropic), and POSTs the report to the Dashboard.
+- **CI Analysis**: Triggered via GitHub Actions on every push. Runs git diff, parses AST using tree-sitter (Python, JS, TS, TSX), applies deterministic rules, validates alignment with an LLM (OpenAI, Anthropic, or local Ollama), and POSTs the report to the Dashboard.
 - **Pre-push Hook**: Optional local hook that runs deterministic checks and uses an LLM to rewrite bad commit messages *before* the push leaves the machine. Prompts to amend the commit.
 - **Dashboard**: FastAPI + SQLAlchemy + PostgreSQL backend. React + Vite + shadcn frontend. Receives reports and displays repo histories, commit trends, and rule patterns.
 - **Rule Engine**: Evaluates commit diff size, message length, generic subjects, module mentions, missing breaking markers, and changed public function signatures.
