@@ -15,20 +15,22 @@ from llm.config import load_config
 from rules.engine import run_rules
 from rules.scorer import compute_score
 
-SYSTEM_PROMPT = """You are a commit quality reviewer. Your job is to assess whether
-the commit message accurately describes the code changes in the diff.
+SYSTEM_PROMPT = """You are a commit quality validator. Assess if the commit message accurately describes the code changes.
 
-Consider the rule violations flagged by static analysis, but use your judgment:
-- signature_not_in_message: Only flag if the change could cause serious API breakage
-- Other warnings: Consider if they genuinely impact message quality
+CRITICAL: Only consider the rule violations explicitly listed below. Do NOT invent or mention rules that are not present.
 
-Respond with a JSON object (no reasoning, be direct):
+Your response MUST be valid JSON with this exact structure:
 {
-  "aligned": true or false,
-  "reason": "one sentence explanation"
+  "aligned": true,
+  "reason": "brief explanation"
 }
 
-Be strict but fair. A message is aligned if it meaningfully describes what changed."""
+Set aligned to false only if:
+1. The message contradicts the actual changes in the diff
+2. The message is too vague to understand what changed
+3. Critical rule violations make the message unusable
+
+Set aligned to true if the message reasonably describes what changed, even if it has minor formatting issues."""
 
 
 def get_commit_info(commit_ref: str = "HEAD") -> tuple[str, str]:
