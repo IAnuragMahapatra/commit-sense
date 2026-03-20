@@ -13,11 +13,34 @@ from rules.engine import run_rules
 from rules.scorer import compute_score
 
 
-def _get_commit_info() -> tuple[str, str]:
-    """Return (sha, commit_message) for HEAD."""
-    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+def _get_unpushed_commits(remote_ref: str) -> list[str]:
+    """Get list of commit SHAs that haven't been pushed yet."""
+    try:
+        # Get commits that are in HEAD but not in the remote ref
+        output = subprocess.check_output(
+            ["git", "rev-list", f"{remote_ref}..HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        if not output:
+            return []
+        return output.split("\n")
+    except subprocess.CalledProcessError:
+        # Remote ref doesn't exist (first push) - get all commits
+        try:
+            output = subprocess.check_output(
+                ["git", "rev-list", "HEAD"],
+                text=True,
+            ).strip()
+            return output.split("\n") if output else []
+        except subprocess.CalledProcessError:
+            return []
+
+
+def _get_commit_info(sha: str) -> tuple[str, str]:
+    """Return (sha, commit_message) for the given commit."""
     message = subprocess.check_output(
-        ["git", "log", "-1", "--pretty=%B"], text=True
+        ["git", "log", "-1", "--pretty=%B", sha], text=True
     ).strip()
     return sha, message
 
@@ -68,22 +91,24 @@ def _post_to_dashboard(payload: dict) -> None:
         print(f"  → Dashboard POST failed (non-blocking): {exc}", file=sys.stderr)
 
 
-def main() -> None:
-    """Run the pre-push hook pipeline. Always exits 0."""
-    sha, message = _get_commit_info()
-    print(f"\n🔍 CommitSense pre-push — {sha[:8]}")
+def _process_commit(sha: str, is_head: bool) -> bool:
+    """
+    Process a single commit. Returns True if commit was amended (requires rebase).
+    """
+    _, message = _get_commit_info(sha)
+    print(f"\n🔍 CommitSense — {sha[:8]}")
     print(f"   Message: {message[:72]}")
 
     # 1. Git diff (no AST)
     try:
-        file_diffs = get_diff()
+        file_diffs = get_diff(commit_ref=sha)
     except RuntimeError as exc:
-        print(f"  ⚠ Diff failed: {exc} — skipping analysis")
-        return
+        print(f"  ⚠ Diff failed: {exc} — skipping")
+        return False
 
     if not file_diffs:
-        print("  ✓ No file changes detected — nothing to check")
-        return
+        print("  ✓ No file changes detected")
+        return False
 
     # 2. Rule engine (empty ast_results — no AST in hook)
     flags = run_rules(message, file_diffs, ast_results={})
@@ -91,7 +116,7 @@ def main() -> None:
 
     if not flags:
         print(f"  ✓ Message looks good (grade {score_data['grade']})")
-        return
+        return False
 
     # 3. Show flags
     print(f"\n  ⚠ Grade {score_data['grade']} — {len(flags)} issue(s):")
@@ -106,8 +131,8 @@ def main() -> None:
     try:
         result = rewrite_message(message, flags, diff_summary)
     except RuntimeError as exc:
-        print(f"  ⚠ Rewrite failed: {exc} — keeping original message")
-        return
+        print(f"  ⚠ Rewrite failed: {exc} — keeping original")
+        return False
 
     print("\n  📝 Suggested rewrite:")
     print(f"     Original:  {message}")
@@ -130,12 +155,16 @@ def main() -> None:
             accept = answer in ("", "y", "yes")
         except (OSError, EOFError, KeyboardInterrupt):
             accept = False
-            
+
     if not accept:
         print("  → Keeping original message")
-        return
+        return False
 
-    # 6. Amend the commit
+    # 6. Amend the commit (only if it's HEAD)
+    if not is_head:
+        print("  ⚠ Cannot amend non-HEAD commit — use interactive rebase manually")
+        return False
+
     try:
         subprocess.run(
             ["git", "commit", "--amend", "-m", result.rewritten],
@@ -149,7 +178,7 @@ def main() -> None:
         print(f"  ✓ Commit amended — new SHA: {new_sha[:8]}")
     except subprocess.CalledProcessError as exc:
         print(f"  ⚠ Amend failed: {exc.stderr.strip()} — keeping original")
-        return
+        return False
 
     # 7. POST lightweight record to dashboard
     _post_to_dashboard(
@@ -162,7 +191,50 @@ def main() -> None:
         }
     )
 
-    print("  ✓ Done\n")
+    print("  ✓ Done")
+    return True
+
+
+def main() -> None:
+    """Run the pre-push hook pipeline. Always exits 0."""
+    # Read stdin to get the refs being pushed
+    # Format: <local ref> <local sha> <remote ref> <remote sha>
+    stdin_input = sys.stdin.read().strip()
+
+    if not stdin_input:
+        print("\n🔍 CommitSense pre-push — no refs to push")
+        return
+
+    lines = stdin_input.split("\n")
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+
+        local_ref, local_sha, remote_ref, remote_sha = parts[:4]
+
+        # Get all unpushed commits
+        unpushed = _get_unpushed_commits(remote_ref)
+
+        if not unpushed:
+            print("\n🔍 CommitSense pre-push — all commits already pushed")
+            return
+
+        print(
+            f"\n🔍 CommitSense pre-push — checking {len(unpushed)} unpushed commit(s)"
+        )
+
+        # Process commits from oldest to newest (reverse order)
+        unpushed.reverse()
+
+        for i, sha in enumerate(unpushed):
+            is_head = i == len(unpushed) - 1  # Last commit is HEAD
+            amended = _process_commit(sha, is_head)
+
+            if amended and not is_head:
+                print("\n  ⚠ HEAD was amended but there are older commits")
+                print("     You may need to rebase older commits manually")
+                break
 
 
 if __name__ == "__main__":
