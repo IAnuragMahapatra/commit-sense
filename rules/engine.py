@@ -94,12 +94,19 @@ def run_rules(
             ))
 
     # 5. Message doesn't mention any changed module
-    # Exclude __init__ and similar non-descriptive stems
-    changed_modules = {
-        Path(f.path).stem.lower()
-        for f in file_diffs
-        if Path(f.path).stem not in ("__init__", "index", "")
-    }
+    # Collect both filenames and directory names as potential module references
+    changed_modules = set()
+    for f in file_diffs:
+        p = Path(f.path)
+        # Add filename stem (excluding generic names)
+        if p.stem not in ("__init__", "index", ""):
+            changed_modules.add(p.stem.lower())
+        # Add parent directory names (excluding root and generic names)
+        for part in p.parts[:-1]:  # exclude the filename itself
+            if part not in (".", "..", "src", "lib", "utils"):
+                changed_modules.add(part.lower())
+
+    # Check if any module is mentioned in the message
     if changed_modules and not any(mod in msg_lower for mod in changed_modules):
         flags.append(Flag(
             "missing_module_ref", "warning",
