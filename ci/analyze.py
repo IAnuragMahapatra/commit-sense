@@ -1,19 +1,19 @@
 """CI analysis runner — full pipeline: diff → AST → rules → LLM → POST to dashboard."""
 
-import os
-import sys
 import json
+import os
 import subprocess
+import sys
+
 import requests
 
-from diff.parser import get_diff
+from cli.reporter import print_report
 from diff.ast_extractor import extract_definitions
-from rules.engine import run_rules
-from rules.scorer import compute_score
+from diff.parser import get_diff
 from llm.adapter import complete
 from llm.config import load_config
-from cli.reporter import print_report
-
+from rules.engine import run_rules
+from rules.scorer import compute_score
 
 SYSTEM_PROMPT = """You are a commit quality reviewer. Your job is to assess whether
 the commit message accurately describes the code changes in the diff.
@@ -27,13 +27,16 @@ Respond with a JSON object:
 Be strict but fair. A message is aligned if it meaningfully describes what changed."""
 
 
-def get_commit_info() -> tuple[str, str]:
-    """Return (sha, commit_message) for HEAD."""
+def get_commit_info(commit_ref: str = "HEAD") -> tuple[str, str]:
+    """Return (sha, commit_message) for the given commit reference."""
     sha = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], text=True, encoding="utf-8", errors="replace"
+        ["git", "rev-parse", commit_ref], text=True, encoding="utf-8", errors="replace"
     ).strip()
     message = subprocess.check_output(
-        ["git", "log", "-1", "--pretty=%B"], text=True, encoding="utf-8", errors="replace"
+        ["git", "log", "-1", "--pretty=%B", commit_ref],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
     ).strip()
     return sha, message
 
@@ -88,13 +91,13 @@ def post_to_dashboard(payload: dict) -> None:
         print(f"[ci] Dashboard POST failed: {exc}", file=sys.stderr)
 
 
-def run(repo_path: str = ".") -> dict:
+def run(repo_path: str = ".", commit_ref: str = "HEAD") -> dict:
     """Run the full CI analysis pipeline. Returns the report dict."""
-    sha, message = get_commit_info()
+    sha, message = get_commit_info(commit_ref)
     print(f"[ci] Analyzing commit {sha[:8]}: {message[:60]}")
 
     # 1. Git diff
-    file_diffs = get_diff(repo_path)
+    file_diffs = get_diff(repo_path, commit_ref)
     print(f"[ci] {len(file_diffs)} file(s) changed")
 
     # 2. AST extraction (changed files only, supported extensions)
@@ -112,12 +115,21 @@ def run(repo_path: str = ".") -> dict:
     # 4. LLM validation
     diff_summary = build_diff_summary(file_diffs)
     llm_result = validate_with_llm(message, diff_summary)
-    print(f"[ci] LLM aligned: {llm_result.get('aligned')} — {llm_result.get('reason', '')}")
+    print(
+        f"[ci] LLM aligned: {llm_result.get('aligned')} — {llm_result.get('reason', '')}"
+    )
 
     # 5. Build report
-    repo = subprocess.check_output(
-        ["git", "remote", "get-url", "origin"], text=True, encoding="utf-8", errors="replace"
-    ).strip() if _has_remote() else os.path.basename(os.path.abspath(repo_path))
+    repo = (
+        subprocess.check_output(
+            ["git", "remote", "get-url", "origin"],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        ).strip()
+        if _has_remote()
+        else os.path.basename(os.path.abspath(repo_path))
+    )
 
     report = {
         "sha": sha,
@@ -130,8 +142,7 @@ def run(repo_path: str = ".") -> dict:
         "llm_aligned": llm_result.get("aligned"),
         "llm_reason": llm_result.get("reason"),
         "flags": [
-            {"rule": f.rule, "severity": f.severity, "detail": f.detail}
-            for f in flags
+            {"rule": f.rule, "severity": f.severity, "detail": f.detail} for f in flags
         ],
     }
 
@@ -140,13 +151,29 @@ def run(repo_path: str = ".") -> dict:
 
 def _has_remote() -> bool:
     try:
-        subprocess.check_output(["git", "remote", "get-url", "origin"], stderr=subprocess.DEVNULL)
+        subprocess.check_output(
+            ["git", "remote", "get-url", "origin"], stderr=subprocess.DEVNULL
+        )
         return True
     except subprocess.CalledProcessError:
         return False
 
 
 if __name__ == "__main__":
-    report = run()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Analyze a commit with CommitSense")
+    parser.add_argument(
+        "commit",
+        nargs="?",
+        default="HEAD",
+        help="Commit SHA or reference (default: HEAD)",
+    )
+    parser.add_argument(
+        "--repo", default=".", help="Repository path (default: current directory)"
+    )
+    args = parser.parse_args()
+
+    report = run(repo_path=args.repo, commit_ref=args.commit)
     print_report(report)
     post_to_dashboard(report)

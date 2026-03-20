@@ -21,15 +21,19 @@ class FileDiff:
     hunks: list[Hunk] = field(default_factory=list)
 
 
-def get_diff(repo_path: str = ".") -> list[FileDiff]:
+def get_diff(repo_path: str = ".", commit_ref: str = "HEAD") -> list[FileDiff]:
     """
-    Run `git diff HEAD~1 HEAD` and return parsed file diffs.
+    Run `git diff` for the given commit and return parsed file diffs.
+
+    Args:
+        repo_path: Path to the git repository
+        commit_ref: Commit reference (SHA, HEAD, etc.) to analyze
 
     Returns a list of FileDiff — one per changed file.
     Raises RuntimeError if git diff fails.
     """
     result = subprocess.run(
-        ["git", "diff", "HEAD~1", "HEAD"],
+        ["git", "diff", f"{commit_ref}~1", commit_ref],
         cwd=repo_path,
         capture_output=True,
         text=True,
@@ -57,7 +61,7 @@ def _parse_diff(raw: str) -> list[FileDiff]:
             if current_file:
                 files.append(current_file)
             # Extract the b/ path (handles spaces in filenames less fragile than split)
-            parts = line[len("diff --git "):].split(" b/", 1)
+            parts = line[len("diff --git ") :].split(" b/", 1)
             path = parts[1] if len(parts) == 2 else line.split()[-1].lstrip("b/")
             current_file = FileDiff(path=path, additions=0, deletions=0)
 
