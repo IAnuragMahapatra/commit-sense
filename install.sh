@@ -30,7 +30,7 @@ mkdir -p .git/hooks
 # Back up existing hook
 if [ -f "$HOOK_FILE" ]; then
     cp "$HOOK_FILE" "${HOOK_FILE}.bak"
-    echo "Backed up existing pre-push hook → ${HOOK_FILE}.bak"
+    echo "Backed up existing pre-push hook -> ${HOOK_FILE}.bak"
 fi
 
 # Write the hook shim
@@ -42,6 +42,6 @@ EOF
 
 chmod +x "$HOOK_FILE"
 
-echo "✓ CommitSense pre-push hook installed"
+echo "[OK] CommitSense pre-push hook installed"
 echo "  Hook: $HOOK_FILE"
 echo "  Root: $SCRIPT_DIR"
