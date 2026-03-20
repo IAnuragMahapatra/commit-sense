@@ -188,6 +188,10 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    report = run(repo_path=args.repo, commit_ref=args.commit)
-    print_report(report)
-    post_to_dashboard(report)
+    try:
+        report = run(repo_path=args.repo, commit_ref=args.commit)
+        print_report(report)
+        post_to_dashboard(report)
+    except Exception as exc:
+        print(f"[ci] Fatal error: {exc}", file=sys.stderr)
+        sys.exit(1)
