@@ -1,5 +1,3 @@
-"""Pre-push hook — lightweight: diff → rules → rewrite → amend → POST."""
-
 import os
 import subprocess
 import sys
@@ -33,9 +31,9 @@ def _get_unpushed_commits(remote_sha: str) -> list[str]:
     try:
         # Check if this is a new branch (remote SHA is all zeros)
         if remote_sha == "0" * 40:
-            # New branch - get all commits
+            # New branch - get commits not reachable from any remote
             output = subprocess.check_output(
-                ["git", "rev-list", "HEAD"],
+                ["git", "rev-list", "HEAD", "--not", "--remotes"],
                 text=True,
             ).strip()
             return output.split("\n") if output else []
@@ -83,7 +81,9 @@ def _build_diff_summary(file_diffs) -> str:
     return "\n".join(lines[:60])
 
 
-def _rewrite_unpushed_commits(all_unpushed: list[str], fix_map: dict[str, str]) -> str:
+def _rewrite_unpushed_commits(
+    all_unpushed: list[str], fix_map: dict[str, str]
+) -> tuple[str, dict[str, str]]:
     """
     Rewrite commit messages for unpushed commits using git plumbing.
 
@@ -92,12 +92,19 @@ def _rewrite_unpushed_commits(all_unpushed: list[str], fix_map: dict[str, str]) 
         fix_map: {sha: new_message} for commits that need fixing
 
     Returns:
-        New HEAD SHA after rewriting
+        Tuple of (new_head_sha, old_to_new_mapping)
     """
     # Start from the parent of the oldest unpushed commit
-    base = subprocess.check_output(
-        ["git", "rev-parse", f"{all_unpushed[0]}^"], text=True
-    ).strip()
+    # Handle initial commit edge case (no parent)
+    try:
+        base = subprocess.check_output(
+            ["git", "rev-parse", f"{all_unpushed[0]}^"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except subprocess.CalledProcessError:
+        # Initial commit - no parent
+        base = None
 
     new_parent = base
     old_to_new = {}
@@ -139,8 +146,14 @@ def _rewrite_unpushed_commits(all_unpushed: list[str], fix_map: dict[str, str]) 
         }
 
         # Create new commit object with same tree, new message, new parent
+        if new_parent is None:
+            # Initial commit - no parent
+            commit_cmd = ["git", "commit-tree", tree, "-m", message]
+        else:
+            commit_cmd = ["git", "commit-tree", tree, "-p", new_parent, "-m", message]
+
         new_sha = subprocess.check_output(
-            ["git", "commit-tree", tree, "-p", new_parent, "-m", message],
+            commit_cmd,
             text=True,
             env=env,
         ).strip()
@@ -148,15 +161,13 @@ def _rewrite_unpushed_commits(all_unpushed: list[str], fix_map: dict[str, str]) 
         old_to_new[sha] = new_sha
         new_parent = new_sha
 
-    return new_parent  # new HEAD
+    return new_parent, old_to_new
 
 
-def _post_to_dashboard(payload: dict) -> None:
+def _post_to_dashboard(payload: dict, dashboard_cfg: dict) -> None:
     """POST a lightweight hook record to the dashboard. Never raises."""
-    cfg = load_config()
-    dashboard = cfg.get("dashboard", {})
-    url = dashboard.get("url", "").rstrip("/")
-    token = dashboard.get("token", "")
+    url = dashboard_cfg.get("url", "").rstrip("/")
+    token = dashboard_cfg.get("token", "")
 
     if not url:
         return
@@ -174,9 +185,9 @@ def _post_to_dashboard(payload: dict) -> None:
         print(f"  → Dashboard POST failed (non-blocking): {exc}", file=sys.stderr)
 
 
-def _process_commit(sha: str, is_head: bool) -> tuple[bool, str | None]:
+def _process_commit(sha: str) -> tuple[bool, str | None, str]:
     """
-    Process a single commit. Returns (has_issues, rewritten_message).
+    Process a single commit. Returns (has_issues, rewritten_message, original_message).
     Does NOT amend - just checks and suggests rewrite.
     """
     _, message = _get_commit_info(sha)
@@ -188,11 +199,11 @@ def _process_commit(sha: str, is_head: bool) -> tuple[bool, str | None]:
         file_diffs = get_diff(commit_ref=sha)
     except RuntimeError as exc:
         print(f"  ⚠ Diff failed: {exc} — skipping")
-        return False, None
+        return False, None, message
 
     if not file_diffs:
         print("  ✓ No file changes detected")
-        return False, None
+        return False, None, message
 
     # 2. Rule engine (empty ast_results — no AST in hook)
     flags = run_rules(message, file_diffs, ast_results={})
@@ -200,7 +211,7 @@ def _process_commit(sha: str, is_head: bool) -> tuple[bool, str | None]:
 
     if not flags:
         print(f"  ✓ Message looks good (grade {score_data['grade']})")
-        return False, None
+        return False, None, message
 
     # 3. Show flags
     print(f"\n  ⚠ Grade {score_data['grade']} — {len(flags)} issue(s):")
@@ -216,14 +227,14 @@ def _process_commit(sha: str, is_head: bool) -> tuple[bool, str | None]:
         result = rewrite_message(message, flags, diff_summary)
     except RuntimeError as exc:
         print(f"  ⚠ Rewrite failed: {exc}")
-        return True, None  # Has issues but can't suggest fix
+        return True, None, message  # Has issues but can't suggest fix
 
     print("\n  📝 Suggested rewrite:")
     print(f"     Original:  {message}")
     print(f"     Rewritten: {result.rewritten}")
     print(f"     Reason:    {result.explanation}")
 
-    return True, result.rewritten
+    return True, result.rewritten, message
 
 
 def main() -> None:
@@ -257,11 +268,17 @@ def main() -> None:
             if len(parts) < 4:
                 continue
 
-            local_ref, local_sha, remote_ref, remote_sha = parts[:4]
+            _, _, _, remote_sha = parts[:4]
             unpushed.extend(_get_unpushed_commits(remote_sha))
 
         # Deduplicate while preserving order (branches can share commits)
         unpushed = list(dict.fromkeys(unpushed))
+
+        # TODO: Multi-ref ordering issue - when pushing multiple branches,
+        # commits from different branches get interleaved in undefined order
+        # after extend+reverse. commit-tree then chains them sequentially as
+        # if they were linear history, which is incorrect. For now, this works
+        # for single-branch pushes (the common case).
 
         if not unpushed:
             print("\n[CommitSense] No refs to push")
@@ -273,26 +290,24 @@ def main() -> None:
 
     print(f"\n[CommitSense] Checking {len(unpushed)} unpushed commit(s)...")
 
+    # Load config once for the entire run
+    cfg = load_config()
+
     # Process commits from oldest to newest (reverse order)
     unpushed.reverse()
 
     commits_needing_fix = []
-    for i, sha in enumerate(unpushed):
-        is_head = i == len(unpushed) - 1  # Last commit is HEAD
-        has_issues, rewritten_msg = _process_commit(sha, is_head)
+    for sha in unpushed:
+        has_issues, rewritten_msg, original_msg = _process_commit(sha)
 
         if has_issues:
-            commits_needing_fix.append((sha, is_head, rewritten_msg))
+            commits_needing_fix.append((sha, rewritten_msg, original_msg))
 
     if not commits_needing_fix:
         print("\n[CommitSense] ✓ All commits look good")
         return
 
-    # Check if only HEAD needs fixing
-    only_head_needs_fix = len(commits_needing_fix) == 1 and commits_needing_fix[0][1]
-
-    # Only HEAD needs fixing - check if auto_amend is enabled
-    cfg = load_config()
+    # Check if auto_amend is enabled
     auto_amend = cfg.get("rewrite", {}).get("auto_amend", False)
 
     if not auto_amend:
@@ -304,12 +319,12 @@ def main() -> None:
     # Auto-fix all commits with issues
     print(f"\n[CommitSense] ⚡ Auto-fixing {len(commits_needing_fix)} commit(s)...")
 
-    # Create backup tag
+    # Create backup tag (force to handle collision from previous failed run)
     original_head = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], text=True
     ).strip()
     subprocess.run(
-        ["git", "tag", "_commitsense_backup", original_head],
+        ["git", "tag", "--force", "_commitsense_backup", original_head],
         check=True,
         capture_output=True,
     )
@@ -317,7 +332,7 @@ def main() -> None:
     try:
         # Build fix map: {sha: new_message}
         fix_map = {}
-        for sha, is_head, rewritten_msg in commits_needing_fix:
+        for sha, rewritten_msg, original_msg in commits_needing_fix:
             if rewritten_msg:
                 fix_map[sha] = rewritten_msg
             else:
@@ -326,7 +341,7 @@ def main() -> None:
                 raise RuntimeError("Missing rewrite for commit")
 
         # Rewrite all unpushed commits
-        new_head = _rewrite_unpushed_commits(unpushed, fix_map)
+        new_head, old_to_new = _rewrite_unpushed_commits(unpushed, fix_map)
 
         # Update HEAD to new commit chain
         subprocess.run(
@@ -340,18 +355,19 @@ def main() -> None:
         print(f"  ✓ New HEAD: {new_head[:8]}")
 
         # POST to dashboard for each fixed commit
-        for sha, is_head, rewritten_msg in commits_needing_fix:
-            if sha in fix_map:
-                original_msg = _get_commit_info(sha)[1]
-                _post_to_dashboard(
-                    {
-                        "sha": new_head if is_head else sha,  # Use new SHA
-                        "repo": _get_repo_name(),
-                        "original_message": original_msg,
-                        "rewritten_message": rewritten_msg,
-                        "amended": True,
-                    }
-                )
+        dashboard_cfg = cfg.get("dashboard", {})
+        for sha, rewritten_msg, original_msg in commits_needing_fix:
+            new_sha = old_to_new[sha]  # Use mapped new SHA
+            _post_to_dashboard(
+                {
+                    "sha": new_sha,
+                    "repo": _get_repo_name(),
+                    "original_message": original_msg,
+                    "rewritten_message": rewritten_msg,
+                    "amended": True,
+                },
+                dashboard_cfg,
+            )
 
         # Clean up backup tag
         subprocess.run(
