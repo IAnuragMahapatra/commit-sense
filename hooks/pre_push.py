@@ -210,52 +210,64 @@ def main() -> None:
     # Format: <local ref> <local sha> <remote ref> <remote sha>
     stdin_input = sys.stdin.read().strip()
 
+    # If no stdin (manual execution), check against origin/main
     if not stdin_input:
-        print("\n[CommitSense] No refs to push")
+        print("\n[CommitSense] Manual execution - checking against origin/main")
+        try:
+            remote_ref = "origin/main"
+            unpushed = _get_unpushed_commits(remote_ref)
+        except Exception:
+            print("[CommitSense] Could not determine unpushed commits")
+            return
+    else:
+        # Parse stdin from git push
+        lines = stdin_input.split("\n")
+        found = False
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+
+            local_ref, local_sha, remote_ref, remote_sha = parts[:4]
+            unpushed = _get_unpushed_commits(remote_ref)
+            found = True
+            break
+
+        if not found:
+            print("\n[CommitSense] No refs to push")
+            return
+
+    if not unpushed:
+        print("\n[CommitSense] All commits already pushed")
         return
 
-    lines = stdin_input.split("\n")
-    for line in lines:
-        parts = line.split()
-        if len(parts) < 4:
-            continue
+    print(f"\n[CommitSense] Checking {len(unpushed)} unpushed commit(s)...")
 
-        local_ref, local_sha, remote_ref, remote_sha = parts[:4]
+    # Process commits from oldest to newest (reverse order)
+    unpushed.reverse()
 
-        # Get all unpushed commits
-        unpushed = _get_unpushed_commits(remote_ref)
+    needs_fixing = []
+    for i, sha in enumerate(unpushed):
+        is_head = i == len(unpushed) - 1  # Last commit is HEAD
+        has_issues = _process_commit(sha, is_head)
 
-        if not unpushed:
-            print("\n[CommitSense] All commits already pushed")
-            return
+        if has_issues:
+            needs_fixing.append((sha, is_head))
 
-        print(f"\n[CommitSense] Checking {len(unpushed)} unpushed commit(s)...")
+    if not needs_fixing:
+        print("\n[CommitSense] ✓ All commits look good")
+        return
 
-        # Process commits from oldest to newest (reverse order)
-        unpushed.reverse()
+    # Check if only HEAD needs fixing
+    only_head_needs_fix = len(needs_fixing) == 1 and needs_fixing[0][1]
 
-        needs_fixing = []
-        for i, sha in enumerate(unpushed):
-            is_head = i == len(unpushed) - 1  # Last commit is HEAD
-            has_issues = _process_commit(sha, is_head)
-
-            if has_issues:
-                needs_fixing.append((sha, is_head))
-
-        if not needs_fixing:
-            print("\n[CommitSense] ✓ All commits look good")
-            return
-
-        # Check if only HEAD needs fixing
-        only_head_needs_fix = len(needs_fixing) == 1 and needs_fixing[0][1]
-
-        if not only_head_needs_fix:
-            print(
-                f"\n[CommitSense] ⚠ Push blocked - {len(needs_fixing)} commit(s) have issues"
-            )
-            print("Older commits need fixing - use interactive rebase:")
-            print(f"  git rebase -i HEAD~{len(unpushed)}")
-            sys.exit(1)
+    if not only_head_needs_fix:
+        print(
+            f"\n[CommitSense] ⚠ Push blocked - {len(needs_fixing)} commit(s) have issues"
+        )
+        print("Older commits need fixing - use interactive rebase:")
+        print(f"  git rebase -i HEAD~{len(unpushed)}")
+        sys.exit(1)
 
         # Only HEAD needs fixing - check if auto_amend is enabled
         cfg = load_config()
