@@ -52,6 +52,10 @@ def _parse_diff(raw: str) -> list[FileDiff]:
     current_file: FileDiff | None = None
     current_hunk: Hunk | None = None
 
+    # Handle empty or None diff (initial commits, merges, etc.)
+    if not raw:
+        return files
+
     for line in raw.splitlines():
         # New file block: diff --git a/path b/path
         if line.startswith("diff --git "):
