@@ -234,19 +234,40 @@ def main() -> None:
         # Process commits from oldest to newest (reverse order)
         unpushed.reverse()
 
-        needs_fixing = False
+        needs_fixing = []
         for i, sha in enumerate(unpushed):
             is_head = i == len(unpushed) - 1  # Last commit is HEAD
             has_issues = _process_commit(sha, is_head)
 
             if has_issues:
-                needs_fixing = True
+                needs_fixing.append((sha, is_head))
 
-        if needs_fixing:
-            print("\n[CommitSense] ⚠ Push blocked - commits have quality issues")
-            print("Fix them by running: python -m hooks.pre_push (manually)")
-            print("Or set auto_amend: true in commitsense.yml")
-            sys.exit(1)  # Block the push
+        if not needs_fixing:
+            print("\n[CommitSense] ✓ All commits look good")
+            return
+
+        # Check if only HEAD needs fixing
+        only_head_needs_fix = len(needs_fixing) == 1 and needs_fixing[0][1]
+
+        if not only_head_needs_fix:
+            print(
+                f"\n[CommitSense] ⚠ Push blocked - {len(needs_fixing)} commit(s) have issues"
+            )
+            print("Older commits need fixing - use interactive rebase:")
+            print(f"  git rebase -i HEAD~{len(unpushed)}")
+            sys.exit(1)
+
+        # Only HEAD needs fixing - check if auto_amend is enabled
+        cfg = load_config()
+        auto_amend = cfg.get("rewrite", {}).get("auto_amend", False)
+
+        if not auto_amend:
+            print("\n[CommitSense] ⚠ Push blocked - HEAD commit has issues")
+            print("Set auto_amend: true in commitsense.yml to fix automatically")
+            print("Or fix manually and commit again")
+            sys.exit(1)
+
+        print("\n[CommitSense] ✓ HEAD was auto-fixed, push allowed")
 
 
 if __name__ == "__main__":
