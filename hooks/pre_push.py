@@ -164,36 +164,38 @@ def main() -> None:
     # Format: <local ref> <local sha> <remote ref> <remote sha>
     stdin_input = sys.stdin.read().strip()
 
-    # If no stdin (manual execution), check against origin/main
+    # If no stdin (manual execution), check against current branch's upstream
     if not stdin_input:
-        print("\n[CommitSense] Manual execution - checking against origin/main")
+        print("\n[CommitSense] Manual execution - checking against upstream")
         try:
-            # Get the remote SHA for origin/main
+            # Get the upstream of current branch
             remote_sha = subprocess.check_output(
-                ["git", "rev-parse", "origin/main"],
+                ["git", "rev-parse", "@{u}"],
                 text=True,
+                stderr=subprocess.DEVNULL,
             ).strip()
             unpushed = _get_unpushed_commits(remote_sha)
-        except Exception as exc:
-            print(f"[CommitSense] Could not determine unpushed commits: {exc}")
+        except subprocess.CalledProcessError:
+            print(
+                "[CommitSense] No upstream branch set - cannot determine unpushed commits"
+            )
             return
     else:
-        # Parse stdin from git push
+        # Parse stdin from git push - process ALL refs being pushed
         lines = stdin_input.split("\n")
-        found = False
+        unpushed = []
         for line in lines:
             parts = line.split()
             if len(parts) < 4:
                 continue
 
             local_ref, local_sha, remote_ref, remote_sha = parts[:4]
-            unpushed = _get_unpushed_commits(
-                remote_sha
-            )  # Use remote_sha, not remote_ref!
-            found = True
-            break
+            unpushed.extend(_get_unpushed_commits(remote_sha))
 
-        if not found:
+        # Deduplicate while preserving order (branches can share commits)
+        unpushed = list(dict.fromkeys(unpushed))
+
+        if not unpushed:
             print("\n[CommitSense] No refs to push")
             return
 
