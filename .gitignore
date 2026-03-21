@@ -10,3 +10,5 @@ dist/
 .env.local
 screenshots.ps1
 clean.ps1
+analyze-repo.ps1
+.repos/
