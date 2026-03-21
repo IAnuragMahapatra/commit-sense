@@ -108,10 +108,10 @@ def _post_to_dashboard(payload: dict) -> None:
 
 def _process_commit(sha: str, is_head: bool) -> bool:
     """
-    Process a single commit. Returns True if commit was amended (requires rebase).
+    Process a single commit. Returns True if commit has issues that need fixing.
     """
     _, message = _get_commit_info(sha)
-    print(f"\n🔍 CommitSense — {sha[:8]}")
+    print(f"\n[CommitSense] {sha[:8]}")
     print(f"   Message: {message[:72]}")
 
     # 1. Git diff (no AST)
@@ -136,7 +136,7 @@ def _process_commit(sha: str, is_head: bool) -> bool:
     # 3. Show flags
     print(f"\n  ⚠ Grade {score_data['grade']} — {len(flags)} issue(s):")
     for f in flags:
-        icon = {"critical": "🔴", "warning": "🟡", "info": "🔵"}.get(f.severity, "•")
+        icon = {"critical": "[!]", "warning": "[W]", "info": "[i]"}.get(f.severity, "•")
         print(f"    {icon} [{f.severity}] {f.detail}")
 
     # 4. Rewrite via LLM
@@ -147,7 +147,7 @@ def _process_commit(sha: str, is_head: bool) -> bool:
         result = rewrite_message(message, flags, diff_summary)
     except RuntimeError as exc:
         print(f"  ⚠ Rewrite failed: {exc} — keeping original")
-        return False
+        return True  # Has issues but can't fix
 
     print("\n  📝 Suggested rewrite:")
     print(f"     Original:  {message}")
@@ -162,23 +162,17 @@ def _process_commit(sha: str, is_head: bool) -> bool:
         accept = True
         print("\n  ⚡ auto_amend is on — amending automatically")
     else:
-        try:
-            print("\n  Accept rewrite? [Y/n] ", end="", flush=True)
-            tty_dev = "CON" if os.name == "nt" else "/dev/tty"
-            with open(tty_dev, "r") as tty:
-                answer = tty.readline().strip().lower()
-            accept = answer in ("", "y", "yes")
-        except (OSError, EOFError, KeyboardInterrupt):
-            accept = False
+        # Don't prompt during pre-push - just report the issue
+        print("\n  ⚠ Commit needs fixing (set auto_amend: true to fix automatically)")
+        return True  # Has issues
 
     if not accept:
-        print("  → Keeping original message")
-        return False
+        return True  # Has issues
 
-    # 6. Amend the commit (only if it's HEAD)
+    # 6. Amend the commit (only if it's HEAD and auto_amend is true)
     if not is_head:
         print("  ⚠ Cannot amend non-HEAD commit — use interactive rebase manually")
-        return False
+        return True  # Has issues
 
     try:
         subprocess.run(
@@ -193,7 +187,7 @@ def _process_commit(sha: str, is_head: bool) -> bool:
         print(f"  ✓ Commit amended — new SHA: {new_sha[:8]}")
     except subprocess.CalledProcessError as exc:
         print(f"  ⚠ Amend failed: {exc.stderr.strip()} — keeping original")
-        return False
+        return True  # Has issues
 
     # 7. POST lightweight record to dashboard
     _post_to_dashboard(
@@ -207,17 +201,17 @@ def _process_commit(sha: str, is_head: bool) -> bool:
     )
 
     print("  ✓ Done")
-    return True
+    return False  # Fixed
 
 
 def main() -> None:
-    """Run the pre-push hook pipeline. Always exits 0."""
+    """Run the pre-push hook pipeline. Exits with 1 to block push if commits need fixing."""
     # Read stdin to get the refs being pushed
     # Format: <local ref> <local sha> <remote ref> <remote sha>
     stdin_input = sys.stdin.read().strip()
 
     if not stdin_input:
-        print("\n🔍 CommitSense pre-push — no refs to push")
+        print("\n[CommitSense] No refs to push")
         return
 
     lines = stdin_input.split("\n")
@@ -232,30 +226,32 @@ def main() -> None:
         unpushed = _get_unpushed_commits(remote_ref)
 
         if not unpushed:
-            print("\n🔍 CommitSense pre-push — all commits already pushed")
+            print("\n[CommitSense] All commits already pushed")
             return
 
-        print(
-            f"\n🔍 CommitSense pre-push — checking {len(unpushed)} unpushed commit(s)"
-        )
+        print(f"\n[CommitSense] Checking {len(unpushed)} unpushed commit(s)...")
 
         # Process commits from oldest to newest (reverse order)
         unpushed.reverse()
 
+        needs_fixing = False
         for i, sha in enumerate(unpushed):
             is_head = i == len(unpushed) - 1  # Last commit is HEAD
-            amended = _process_commit(sha, is_head)
+            has_issues = _process_commit(sha, is_head)
 
-            if amended and not is_head:
-                print("\n  ⚠ HEAD was amended but there are older commits")
-                print("     You may need to rebase older commits manually")
-                break
+            if has_issues:
+                needs_fixing = True
+
+        if needs_fixing:
+            print("\n[CommitSense] ⚠ Push blocked - commits have quality issues")
+            print("Fix them by running: python -m hooks.pre_push (manually)")
+            print("Or set auto_amend: true in commitsense.yml")
+            sys.exit(1)  # Block the push
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        # Never block the push — print error and exit 0
         print(f"  ⚠ CommitSense hook error: {exc}", file=sys.stderr)
-    sys.exit(0)
+        sys.exit(1)  # Block push on error
