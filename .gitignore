@@ -8,3 +8,5 @@ node_modules/
 dist/
 .vite/
 .env.local
+screenshots.ps1
+clean.ps1
