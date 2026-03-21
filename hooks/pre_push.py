@@ -83,6 +83,74 @@ def _build_diff_summary(file_diffs) -> str:
     return "\n".join(lines[:60])
 
 
+def _rewrite_unpushed_commits(all_unpushed: list[str], fix_map: dict[str, str]) -> str:
+    """
+    Rewrite commit messages for unpushed commits using git plumbing.
+
+    Args:
+        all_unpushed: All unpushed SHAs, oldest-first
+        fix_map: {sha: new_message} for commits that need fixing
+
+    Returns:
+        New HEAD SHA after rewriting
+    """
+    # Start from the parent of the oldest unpushed commit
+    base = subprocess.check_output(
+        ["git", "rev-parse", f"{all_unpushed[0]}^"], text=True
+    ).strip()
+
+    new_parent = base
+    old_to_new = {}
+
+    for sha in all_unpushed:
+        # Preserve original author metadata
+        log_fmt = (
+            subprocess.check_output(
+                ["git", "log", "-1", "--pretty=%an%n%ae%n%aI%n%cn%n%ce%n%cI", sha],
+                text=True,
+            )
+            .strip()
+            .split("\n")
+        )
+        a_name, a_email, a_date, c_name, c_email, c_date = log_fmt
+
+        # Get the tree (file contents) - unchanged
+        tree = subprocess.check_output(
+            ["git", "rev-parse", f"{sha}^{{tree}}"], text=True
+        ).strip()
+
+        # Use new message if in fix_map, otherwise keep original
+        message = (
+            fix_map.get(sha)
+            or subprocess.check_output(
+                ["git", "log", "-1", "--pretty=%B", sha], text=True
+            ).strip()
+        )
+
+        # Set author/committer metadata
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": a_name,
+            "GIT_AUTHOR_EMAIL": a_email,
+            "GIT_AUTHOR_DATE": a_date,
+            "GIT_COMMITTER_NAME": c_name,
+            "GIT_COMMITTER_EMAIL": c_email,
+            "GIT_COMMITTER_DATE": c_date,
+        }
+
+        # Create new commit object with same tree, new message, new parent
+        new_sha = subprocess.check_output(
+            ["git", "commit-tree", tree, "-p", new_parent, "-m", message],
+            text=True,
+            env=env,
+        ).strip()
+
+        old_to_new[sha] = new_sha
+        new_parent = new_sha
+
+    return new_parent  # new HEAD
+
+
 def _post_to_dashboard(payload: dict) -> None:
     """POST a lightweight hook record to the dashboard. Never raises."""
     cfg = load_config()
@@ -223,59 +291,89 @@ def main() -> None:
     # Check if only HEAD needs fixing
     only_head_needs_fix = len(commits_needing_fix) == 1 and commits_needing_fix[0][1]
 
-    if not only_head_needs_fix:
-        print(
-            f"\n[CommitSense] ⚠ Push blocked - {len(commits_needing_fix)} commit(s) have issues"
-        )
-        print("Older commits need fixing - use interactive rebase:")
-        print(f"  git rebase -i HEAD~{len(unpushed)}")
-        sys.exit(1)
-
     # Only HEAD needs fixing - check if auto_amend is enabled
     cfg = load_config()
     auto_amend = cfg.get("rewrite", {}).get("auto_amend", False)
 
     if not auto_amend:
-        print("\n[CommitSense] ⚠ Push blocked - HEAD commit has issues")
+        print("\n[CommitSense] ⚠ Push blocked - commits have quality issues")
         print("Set auto_amend: true in commitsense.yml to fix automatically")
         print("Or fix manually and commit again")
         sys.exit(1)
 
-    # Auto-amend HEAD
-    sha, is_head, rewritten_msg = commits_needing_fix[0]
+    # Auto-fix all commits with issues
+    print(f"\n[CommitSense] ⚡ Auto-fixing {len(commits_needing_fix)} commit(s)...")
 
-    if not rewritten_msg:
-        print("\n[CommitSense] ⚠ Push blocked - could not generate rewrite")
-        sys.exit(1)
+    # Create backup tag
+    original_head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], text=True
+    ).strip()
+    subprocess.run(
+        ["git", "tag", "_commitsense_backup", original_head],
+        check=True,
+        capture_output=True,
+    )
 
-    print("\n[CommitSense] ⚡ Auto-amending HEAD...")
     try:
-        original_msg = _get_commit_info(sha)[1]
+        # Build fix map: {sha: new_message}
+        fix_map = {}
+        for sha, is_head, rewritten_msg in commits_needing_fix:
+            if rewritten_msg:
+                fix_map[sha] = rewritten_msg
+            else:
+                # Can't fix this commit - abort
+                print(f"  ⚠ Could not generate rewrite for {sha[:8]}")
+                raise RuntimeError("Missing rewrite for commit")
+
+        # Rewrite all unpushed commits
+        new_head = _rewrite_unpushed_commits(unpushed, fix_map)
+
+        # Update HEAD to new commit chain
         subprocess.run(
-            ["git", "commit", "--amend", "-m", rewritten_msg],
+            ["git", "reset", "--hard", new_head],
             check=True,
             capture_output=True,
             text=True,
         )
-        new_sha = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], text=True
-        ).strip()
-        print(f"  ✓ Commit amended — new SHA: {new_sha[:8]}")
 
-        # POST to dashboard
-        _post_to_dashboard(
-            {
-                "sha": new_sha,
-                "repo": _get_repo_name(),
-                "original_message": original_msg,
-                "rewritten_message": rewritten_msg,
-                "amended": True,
-            }
+        print(f"  ✓ Rewrote {len(fix_map)} commit(s)")
+        print(f"  ✓ New HEAD: {new_head[:8]}")
+
+        # POST to dashboard for each fixed commit
+        for sha, is_head, rewritten_msg in commits_needing_fix:
+            if sha in fix_map:
+                original_msg = _get_commit_info(sha)[1]
+                _post_to_dashboard(
+                    {
+                        "sha": new_head if is_head else sha,  # Use new SHA
+                        "repo": _get_repo_name(),
+                        "original_message": original_msg,
+                        "rewritten_message": rewritten_msg,
+                        "amended": True,
+                    }
+                )
+
+        # Clean up backup tag
+        subprocess.run(
+            ["git", "tag", "-d", "_commitsense_backup"],
+            capture_output=True,
         )
 
-        print("\n[CommitSense] ✓ HEAD was auto-fixed, push allowed")
-    except subprocess.CalledProcessError as exc:
-        print(f"  ⚠ Amend failed: {exc.stderr.strip()}")
+        print("\n[CommitSense] ✓ All commits fixed, push allowed")
+
+    except Exception as exc:
+        # Rollback on any error
+        print(f"\n  ⚠ Rewrite failed: {exc}")
+        print("  → Rolling back to original state...")
+        subprocess.run(
+            ["git", "reset", "--hard", original_head],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "tag", "-d", "_commitsense_backup"],
+            capture_output=True,
+        )
+        print("  ✓ Rollback complete - no changes made")
         sys.exit(1)
 
 
